@@ -23,7 +23,7 @@ const SOLO_SAVE_KEY = 'crib_solo_house_save_v1';
 const PROFILE_KEY = 'crib_profiles_v1';
 const ACTIVE_PROFILE_KEY = 'crib_active_profile_pin';
 const DIAG_KEY = 'crib_last_diagnostic_v1';
-const APP_BUILD = 'client-v109';
+const APP_BUILD = 'client-v110';
 
 // GitHub Pages (or any static host) has no WebSocket server: use P2P rooms.
 const P2P_MODE = location.hostname.endsWith('github.io') ||
@@ -278,12 +278,11 @@ class PixiCribArt {
       c.rect = rect;
       c.rot = c.isHand ? this.cssRotation(c.el) : this.restingRotation(c.el.dataset.cardId || String(c.seed));
       c.lift = c.el.classList.contains('selected') || c.el.classList.contains('raised') || c.el.matches(':hover') ? 16 : 0;
-      const bob = c.lift ? Math.sin(this.elapsed * 3.2 + c.seed * 6.28) * 2.5 : 0;
-      const wobble = c.lift ? Math.sin(this.elapsed * 2.4 + c.seed * 9.1) * 0.018 : 0;
-      const x = rect.left + rect.width / 2;
-      const y = rect.top + rect.height / 2 - c.lift + bob;
+      const bob = c.lift ? Math.sin(this.elapsed * 3.2 + c.seed * 6.28) * 3 : 0;
+      const x = Math.round(rect.left + rect.width / 2);
+      const y = Math.round(rect.top + rect.height / 2 - c.lift + bob);
       this.drawShadow(c, x, y);
-      this.drawCard(c, x, y, c.rot + wobble);
+      this.drawCard(c, x, y, c.rot);
     }
   }
 
@@ -303,8 +302,8 @@ class PixiCribArt {
     const t = c.text;
     const back = c.el.classList.contains('back');
     const red = c.el.classList.contains('red');
-    const w = c.rect.width;
-    const h = c.rect.height;
+    const w = Math.round(c.rect.width);
+    const h = Math.round(c.rect.height);
     g.clear();
     g.position.set(x, y);
     g.rotation = rot;
@@ -2822,14 +2821,9 @@ function renderHand(st) {
       if (legal) {
         el.classList.add('clickable');
         addPointerCardDrag(el, c.id);
-        if (raisedCardId === c.id) el.classList.add('raised');
-        if (preview && preview.points > 0) {
-          el.classList.add('scores');
-          el.insertAdjacentHTML('beforeend', `<span class="scoretag">+${preview.points}</span>`);
-        }
-        const extraLabels = cardExtraLabels(c, preview, st);
-        if (extraLabels.length) {
-          el.insertAdjacentHTML('beforeend', `<span class="card-effect-tags">${extraLabels.map(label => `<i>${esc(label)}</i>`).join('')}</span>`);
+        if (raisedCardId === c.id) {
+          el.classList.add('raised');
+          el.insertAdjacentHTML('beforeend', peggingPreviewBubbleHtml(preview));
         }
         el.onclick = () => {
           if (el.dataset.dragged === '1') {
@@ -3024,10 +3018,22 @@ function peggingPreview(card, st) {
   const events = pegEvents(st.pegStack.concat([card]), count, { target });
   return {
     legal: true,
+    count,
     points: events.reduce((sum, e) => sum + e.pts, 0),
     handPoints: peggingHandBonusPreview(card, events, count, st),
     events,
   };
+}
+
+function peggingPreviewBubbleHtml(preview) {
+  if (!preview || !preview.legal) return '';
+  const hand = preview.handPoints || 0;
+  const mult = preview.points || 0;
+  const bits = [];
+  if (hand) bits.push(`<b class="hand-gain">+${hand} HAND</b>`);
+  if (mult) bits.push(`<b class="mult-gain">+${mult} MULT</b>`);
+  if (!bits.length) bits.push('<b class="no-gain">NO SCORE</b>');
+  return `<span class="peg-preview-pop"><i>${preview.count}</i>${bits.join('')}</span>`;
 }
 
 function peggingHandBonusPreview(card, events, count, st) {
@@ -3053,29 +3059,6 @@ function peggingHandBonusPreview(card, events, count, st) {
     if (base > 0) total += base;
   }
   return total;
-}
-
-function cardExtraLabels(card, preview, st) {
-  const labels = [];
-  if (preview && preview.handPoints > 0) labels.push(`+${preview.handPoints} Hand`);
-  let extraMult = 0;
-  for (const def of effectiveJokerIds(st.you.jokers || []).map(jokerDef).filter(Boolean)) {
-    if (def.id === 'even_steven' && card.enhancement !== 'stone' && card.rank % 2 === 0 && card.rank <= 10) extraMult += 1;
-    if (preview && preview.events.length && def.id === 'onyx_agate' && (card.suit === 2 || card.enhancement === 'wild')) extraMult += 2;
-  }
-  if (extraMult) labels.push(`+${extraMult} Mult`);
-  const enhancementLabel = {
-    bonus: '+2 Hand at show',
-    mult: '+1 Mult at show',
-    wild: 'All suits',
-    glass: 'x2 Mult at show',
-    steel: 'x1.5 Mult in crib',
-    stone: '+4 Hand / 0 peg',
-    gold: '+3 coins at show',
-    lucky: 'Lucky rolls at show',
-  }[card.enhancement];
-  if (enhancementLabel) labels.push(enhancementLabel);
-  return labels;
 }
 
 function peggingEventText(ev) {
