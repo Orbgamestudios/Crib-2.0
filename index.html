@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<title>Crib - Roguelike Cribbage</title>
+<meta name="theme-color" content="#14422a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Crib">
+<link rel="stylesheet" href="style.css?v=88">
+<script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js" defer></script>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js" defer></script>
+</head>
+<body>
+
+<div id="bg"><div id="bgTurn"></div><div id="bgDrift"></div><div id="bgRush"></div></div>
+
+<div id="lobby" class="view">
+  <h1>♠ CRIB ♥</h1>
+  <p class="tagline">Roguelike cribbage - beat the blind or bust out</p>
+  <div id="diagnosticBanner" class="diagnostic-banner hidden"></div>
+  <div class="row lobby-actions">
+    <button id="howToBtn" class="btn small"><span class="ui-icon icon-info" aria-hidden="true"></span>How to Play</button>
+    <button id="profileBtn" class="btn small">Profile</button>
+  </div>
+  <div class="panel">
+    <label>Your name</label>
+    <input id="nameInput" maxlength="16" placeholder="e.g. Slinde" autocomplete="off">
+    <div id="profileStatus" class="profile-status"></div>
+    <div class="mode-box">
+      <label>Game mode</label>
+      <div class="segmented" id="modeToggle">
+        <button class="active" data-mode="blind" type="button">Regular</button>
+        <button data-mode="endless" type="button">Endless</button>
+        <button data-mode="board" type="button">Board</button>
+      </div>
+    </div>
+    <div class="row" id="wsPanel">
+      <input id="roomNameInput" maxlength="30" placeholder="New table name">
+      <button id="createBtn" class="btn primary">Create Table</button>
+    </div>
+    <div id="p2pPanel" class="hidden">
+      <button id="hostBtn" class="btn primary wide">Host a Table</button>
+      <div style="margin-top:10px;font-size:12px;opacity:0.6;line-height:1.4">
+        Host a table or join from the open tables list below.
+      </div>
+    </div>
+    <button id="soloBtn" class="btn wide" style="margin-top:10px"><span class="ui-icon icon-bot" aria-hidden="true"></span>Play Solo vs The House</button>
+  </div>
+  <div class="panel" id="roomsPanel">
+    <div class="row spread">
+      <h2>Open Tables</h2>
+      <button id="refreshBtn" class="btn small">Refresh</button>
+    </div>
+    <div id="roomList"></div>
+  </div>
+  <button id="updateBtn" class="btn small ghost">Update app</button>
+</div>
+
+<div id="waiting" class="view hidden">
+  <div class="panel">
+    <h2 id="waitRoomName"></h2>
+    <p id="waitCode"></p>
+    <div id="waitPlayers"></div>
+    <div id="waitDeckControls" class="wait-deck-controls"></div>
+    <p class="hint" id="waitHint"></p>
+    <div class="row">
+      <button id="startBtn" class="btn primary hidden">Start Game</button>
+      <button id="leaveBtn" class="btn">Leave</button>
+    </div>
+  </div>
+</div>
+
+<div id="game" class="view hidden">
+  <div id="topbar">
+    <span id="dealInfo"></span>
+    <span id="phaseInfo"></span>
+    <span id="turnInfo"></span>
+    <label class="tut-toggle" id="tutToggle" title="Show tutorial tips">
+      <input type="checkbox" id="tutCheck">
+      <span class="tut-track"><span class="tut-knob"></span></span>
+      <span class="tut-word">Tips</span>
+    </label>
+    <button id="exitSoloBtn" class="btn small hidden" title="Save and return to lobby">Exit</button>
+    <button id="dictBtn" class="btn small" title="Card dictionary">Cards</button>
+    <button id="syncBtn" class="btn small" title="Force refresh game state">Refresh</button>
+  </div>
+  <div id="table">
+    <div id="tutorialBar" class="hidden">
+      <span id="tutorialText"></span>
+      <button id="tutClose" title="Dismiss">&times;</button>
+    </div>
+    <div id="seats"></div>
+    <div id="center">
+      <div id="centerCards">
+        <div class="pile" id="deckPile"></div>
+        <div class="pile" id="starterPile"></div>
+        <div class="pile" id="cribPile"></div>
+      </div>
+      <div id="pegArea">
+        <div id="pegCount"></div>
+        <div id="pegStack"></div>
+      </div>
+    </div>
+  </div>
+  <div id="bottombar">
+    <div id="myCenter">
+      <div id="blindProgress">
+        <div id="blindBarOuter">
+          <div id="blindBarFill"></div>
+          <span id="blindBarLabel"></span>
+        </div>
+      </div>
+      <div id="myCards">
+        <div id="actionRow">
+          <span id="prompt"></span>
+          <button id="actionBtn" class="btn primary hidden"></button>
+          <button id="cancelBtn" class="btn hidden">Cancel</button>
+        </div>
+        <div id="hand"></div>
+      </div>
+      <div id="hudRow">
+        <div id="tarotPanel" class="slot-panel">
+          <div class="stuff-label">Tarots <span id="tarotCount"></span></div>
+          <div id="tarotRow">
+            <div class="tslot empty" data-slot="0"></div>
+            <div class="tslot empty" data-slot="1"></div>
+          </div>
+        </div>
+        <div id="scoreHud">
+          <div id="myScore" class="hud-chip hand-chip"></div>
+          <div id="myMult" class="hud-chip mult-chip"></div>
+        </div>
+        <div id="utilityPanel">
+          <div id="myCoins"></div>
+          <button id="deckBtn" class="btn small"><span class="ui-icon icon-deck" aria-hidden="true"></span>Deck</button>
+        </div>
+      </div>
+      <div id="myStuff" class="slot-panel">
+        <div class="stuff-label">Jokers <span id="jokerCount"></span></div>
+        <div id="jokerRow">
+          <div class="jslot empty" data-slot="0"></div>
+          <div class="jslot empty" data-slot="1"></div>
+          <div class="jslot empty" data-slot="2"></div>
+          <div class="jslot empty" data-slot="3"></div>
+          <div class="jslot empty" data-slot="4"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="log"></div>
+  <div id="board2dWrap" class="hidden">
+    <canvas id="board2d"></canvas>
+    <div id="board2dLegend"></div>
+  </div>
+</div>
+
+<div id="overlay" class="hidden">
+  <div id="overlayContent" class="panel"></div>
+</div>
+
+<div id="deckOverlay" class="hidden">
+  <div id="deckPanel" class="panel">
+    <div class="row spread">
+      <h2 id="deckTitle">Your deck</h2>
+      <button id="deckClose" class="btn small">✕</button>
+    </div>
+    <div id="deckBody"></div>
+  </div>
+</div>
+
+<div id="infoOverlay" class="hidden">
+  <div id="infoPanel" class="panel">
+    <div class="row spread">
+      <h2 id="infoTitle"></h2>
+      <button id="infoClose" class="btn small">&times;</button>
+    </div>
+    <div id="infoBody"></div>
+  </div>
+</div>
+
+<div id="fx"></div>
+<div id="toast" class="hidden"></div>
+
+<script>
+window.__cribBooted = false;
+window.__cribBootTimer = setTimeout(function () {
+  if (window.__cribBooted) return;
+  var banner = document.createElement('div');
+  banner.style.cssText = 'position:fixed;left:12px;right:12px;bottom:12px;z-index:9999;padding:12px;background:#7b2525;color:#fff;border:1px solid #ff9b8f;border-radius:8px;font:14px system-ui;text-align:center';
+  banner.textContent = 'Crib could not finish loading. Refresh once to update the saved app files.';
+  document.body.appendChild(banner);
+}, 4000);
+</script>
+<script type="module" src="client.js?v=108"></script>
+</body>
+</html>
