@@ -23,7 +23,7 @@ const SOLO_SAVE_KEY = 'crib_solo_house_save_v1';
 const PROFILE_KEY = 'crib_profiles_v1';
 const ACTIVE_PROFILE_KEY = 'crib_active_profile_pin';
 const DIAG_KEY = 'crib_last_diagnostic_v1';
-const APP_BUILD = 'client-v108';
+const APP_BUILD = 'client-v109';
 
 // GitHub Pages (or any static host) has no WebSocket server: use P2P rooms.
 const P2P_MODE = location.hostname.endsWith('github.io') ||
@@ -83,6 +83,362 @@ let boardView = null;
 let boardScoreDisplay = new Map();
 let boardFx = [];
 let lastBoardRevealKey = '';
+let pixiArt = null;
+
+class PixiCribArt {
+  constructor() {
+    this.ready = false;
+    this.running = false;
+    this.idleTimer = 0;
+    this.lastFrame = 0;
+    this.elapsed = 0;
+    this.state = null;
+    this.cards = new Map();
+    this.particles = [];
+    this.particleCursor = 0;
+  }
+
+  init() {
+    if (this.ready || !window.PIXI || !$('game')) return this.ready;
+    const PIXI = window.PIXI;
+    PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
+    PIXI.settings.ROUND_PIXELS = true;
+    this.app = new PIXI.Application({
+      resizeTo: window,
+      backgroundAlpha: 0,
+      antialias: false,
+      autoStart: false,
+      resolution: Math.min(window.devicePixelRatio || 1, 2),
+      powerPreference: 'low-power',
+    });
+    this.app.view.id = 'pixiArt';
+    this.app.view.setAttribute('aria-hidden', 'true');
+    $('game').prepend(this.app.view);
+
+    this.root = new PIXI.Container();
+    this.background = new PIXI.Graphics();
+    this.shadowLayer = new PIXI.Container();
+    this.cardLayer = new PIXI.Container();
+    this.particleLayer = new PIXI.Container();
+    this.root.addChild(this.background, this.shadowLayer, this.cardLayer, this.particleLayer);
+    this.app.stage.addChild(this.root);
+
+    this.background.filters = [this.makeLiquidFilter()];
+    this.app.stage.filters = [this.makePostFilter()];
+    this.app.stage.filterArea = this.app.screen;
+    this.buildParticles();
+    document.body.classList.add('pixi-art-enabled');
+    window.addEventListener('resize', () => this.wake(700));
+    this.ready = true;
+    return true;
+  }
+
+  makeLiquidFilter() {
+    const PIXI = window.PIXI;
+    return new PIXI.Filter(null, `
+      precision mediump float;
+      varying vec2 vTextureCoord;
+      uniform float time;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
+      float noise(vec2 p){
+        vec2 i=floor(p), f=fract(p);
+        vec2 u=f*f*(3.0-2.0*f);
+        return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), u.x), mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), u.x), u.y);
+      }
+      void main(){
+        vec2 uv = vTextureCoord;
+        vec2 c = uv - .5;
+        float r = length(c);
+        float a = atan(c.y, c.x) + time * .17 + sin(r * 9.0 - time * .6) * .35;
+        vec2 p = vec2(cos(a), sin(a)) * r * 4.0 + vec2(time * .07, -time * .04);
+        float n = noise(p * 2.4) * .55 + noise(p * 5.2 + time * .08) * .28;
+        vec3 deep = vec3(.035,.105,.120);
+        vec3 teal = vec3(.040,.330,.300);
+        vec3 wine = vec3(.260,.055,.190);
+        vec3 gold = vec3(.850,.560,.180);
+        vec3 color = mix(deep, teal, smoothstep(.12,.92,n));
+        color = mix(color, wine, smoothstep(.52,.88, sin(a * 3.0 + time * .33) * .5 + .5) * .24);
+        color += gold * pow(max(0.0, 1.0 - r * 1.45), 3.0) * .13;
+        gl_FragColor = vec4(color, .96);
+      }`, { time: 0 });
+  }
+
+  makePostFilter() {
+    const PIXI = window.PIXI;
+    return new PIXI.Filter(null, `
+      precision mediump float;
+      varying vec2 vTextureCoord;
+      uniform sampler2D uSampler;
+      uniform vec2 dimensions;
+      uniform float pixelSize;
+      void main(){
+        vec2 uv = vTextureCoord;
+        vec2 c = uv - .5;
+        uv += c * dot(c,c) * .045;
+        vec2 px = pixelSize / dimensions;
+        uv = floor(uv / px) * px + px * .5;
+        vec4 color = texture2D(uSampler, uv);
+        float scan = .965 + .035 * sin(vTextureCoord.y * dimensions.y * 3.14159);
+        float vignette = smoothstep(.88, .28, length(c));
+        gl_FragColor = vec4(color.rgb * scan * (.82 + vignette * .18), color.a);
+      }`, { dimensions: [window.innerWidth, window.innerHeight], pixelSize: 2.0 });
+  }
+
+  buildParticles() {
+    for (let i = 0; i < 96; i++) {
+      const g = new window.PIXI.Graphics();
+      g.visible = false;
+      this.particles.push({ g, active: false, age: 0, life: 0, x: 0, y: 0, vx: 0, vy: 0 });
+      this.particleLayer.addChild(g);
+    }
+  }
+
+  sync(st) {
+    if (!this.init()) return;
+    this.state = st;
+    this.drawStatic();
+    this.wake(this.isAnimatedPhase(st) ? 1800 : 420);
+  }
+
+  isAnimatedPhase(st) {
+    return !!st && (st.phase === 'discard' || st.phase === 'pegging' || st.phase === 'scoring' || st.phase === 'shop' || document.body.classList.contains('my-turn'));
+  }
+
+  wake(ms = 900) {
+    this.idleTimer = Math.max(this.idleTimer, ms / 1000);
+    if (this.running) return;
+    this.running = true;
+    this.lastFrame = performance.now();
+    this.app.ticker.start();
+    requestAnimationFrame(ts => this.frame(ts));
+  }
+
+  frame(ts) {
+    if (!this.running) return;
+    const dt = Math.min(0.05, Math.max(0, (ts - this.lastFrame) / 1000 || 0));
+    this.lastFrame = ts;
+    this.elapsed += dt;
+    this.idleTimer -= dt;
+    this.update(dt);
+    this.app.renderer.render(this.app.stage);
+    if (this.idleTimer <= 0 && !this.hasLiveParticles() && !this.isAnimatedPhase(this.state)) {
+      this.running = false;
+      this.app.ticker.stop();
+      return;
+    }
+    requestAnimationFrame(next => this.frame(next));
+  }
+
+  update(dt) {
+    if (!this.ready) return;
+    const screen = this.app.screen;
+    this.app.stage.filterArea = screen;
+    if (this.background.filters && this.background.filters[0]) this.background.filters[0].uniforms.time = this.elapsed;
+    if (this.app.stage.filters && this.app.stage.filters[0]) this.app.stage.filters[0].uniforms.dimensions = [screen.width, screen.height];
+    this.paintBackground(screen);
+    this.paintCards(dt);
+    this.paintParticles(dt);
+  }
+
+  paintBackground(screen) {
+    this.background.clear();
+    this.background.beginFill(0xffffff, 1);
+    this.background.drawRect(0, 0, screen.width, screen.height);
+    this.background.endFill();
+  }
+
+  drawStatic() {
+    this.shadowLayer.removeChildren();
+    this.cardLayer.removeChildren();
+    this.cards.clear();
+    const els = [...document.querySelectorAll('#game .card:not(.drag-ghost):not(.flying):not(.shuffling)')];
+    els.forEach((el, i) => this.addCard(el, i));
+  }
+
+  addCard(el, i) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 8 || rect.height < 8) return;
+    const key = el.dataset.cardId || `${i}-${Math.round(rect.left)}-${Math.round(rect.top)}`;
+    const isHand = !!el.closest('#hand');
+    const rest = isHand ? 0 : this.restingRotation(key);
+    const cssRot = this.cssRotation(el);
+    const lift = el.classList.contains('selected') || el.classList.contains('raised') ? 15 : 0;
+    const rot = isHand ? cssRot : rest;
+    const shadow = new window.PIXI.Graphics();
+    const card = new window.PIXI.Graphics();
+    const text = new window.PIXI.Container();
+    this.shadowLayer.addChild(shadow);
+    this.cardLayer.addChild(card, text);
+    this.cards.set(key, { el, rect, shadow, card, text, rot, lift, seed: this.hash(key), isHand });
+  }
+
+  paintCards(dt) {
+    for (const c of this.cards.values()) {
+      const rect = c.el.getBoundingClientRect();
+      c.rect = rect;
+      c.rot = c.isHand ? this.cssRotation(c.el) : this.restingRotation(c.el.dataset.cardId || String(c.seed));
+      c.lift = c.el.classList.contains('selected') || c.el.classList.contains('raised') || c.el.matches(':hover') ? 16 : 0;
+      const bob = c.lift ? Math.sin(this.elapsed * 3.2 + c.seed * 6.28) * 2.5 : 0;
+      const wobble = c.lift ? Math.sin(this.elapsed * 2.4 + c.seed * 9.1) * 0.018 : 0;
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2 - c.lift + bob;
+      this.drawShadow(c, x, y);
+      this.drawCard(c, x, y, c.rot + wobble);
+    }
+  }
+
+  drawShadow(c, x, y) {
+    const g = c.shadow;
+    const offset = 4 + c.lift * .45;
+    g.clear();
+    g.position.set(x + offset, y + offset);
+    g.rotation = c.rot;
+    g.beginFill(0x000000, c.lift ? .28 : .40);
+    g.drawRoundedRect(-c.rect.width / 2, -c.rect.height / 2, c.rect.width, c.rect.height, Math.max(4, c.rect.width * .10));
+    g.endFill();
+  }
+
+  drawCard(c, x, y, rot) {
+    const g = c.card;
+    const t = c.text;
+    const back = c.el.classList.contains('back');
+    const red = c.el.classList.contains('red');
+    const w = c.rect.width;
+    const h = c.rect.height;
+    g.clear();
+    g.position.set(x, y);
+    g.rotation = rot;
+    const fill = back ? this.deckColor(c.el) : this.faceColor(c.el);
+    g.beginFill(fill, 1);
+    g.lineStyle(Math.max(1, Math.round(w / 24)), back ? 0xf4ead8 : 0x18120e, back ? .92 : .62);
+    g.drawRoundedRect(-w / 2, -h / 2, w, h, Math.max(4, w * .10));
+    g.endFill();
+    this.drawPips(g, w, h, back, red, c.el);
+    t.removeChildren();
+    t.position.set(x, y);
+    t.rotation = rot;
+    if (back) return;
+    const spans = [...c.el.children].filter(ch => !ch.classList.contains('enhancement-badge'));
+    const rank = spans[0] ? spans[0].textContent.trim() : '';
+    const suit = c.el.querySelector('.suit') ? c.el.querySelector('.suit').textContent.trim() : '';
+    const color = red ? '#b52228' : '#191512';
+    const style = new window.PIXI.TextStyle({ fontFamily: 'Georgia, serif', fontSize: Math.max(10, w * .32), fontWeight: '700', fill: color, lineHeight: Math.max(10, w * .32) });
+    const top = new window.PIXI.Text(rank, style);
+    top.anchor.set(0, 0);
+    top.position.set(-w * .38, -h * .40);
+    const pip = new window.PIXI.Text(suit || rank, new window.PIXI.TextStyle({ fontFamily: 'Georgia, serif', fontSize: Math.max(12, w * .36), fill: color, fontWeight: '700' }));
+    pip.anchor.set(1, 1);
+    pip.position.set(w * .36, h * .39);
+    t.addChild(top, pip);
+  }
+
+  drawPips(g, w, h, back, red, el) {
+    if (back) {
+      g.lineStyle(0);
+      const color = this.deckAccent(el);
+      for (let x = -w * .32; x <= w * .34; x += 8) {
+        g.beginFill(color, .55);
+        g.drawRect(x, -h * .44, 3, h * .88);
+        g.endFill();
+      }
+      g.beginFill(0xffffff, .18);
+      g.drawRect(-w * .18, -h * .18, w * .36, h * .36);
+      g.endFill();
+      return;
+    }
+    g.beginFill(red ? 0xb52228 : 0x171310, .10);
+    g.drawRect(-w * .18, -h * .18, w * .36, h * .36);
+    g.endFill();
+    if (el.className.includes('enhancement-')) {
+      g.lineStyle(Math.max(1, w / 28), 0xffd76e, .58);
+      g.drawRoundedRect(-w * .43, -h * .43, w * .86, h * .86, Math.max(3, w * .07));
+    }
+  }
+
+  paintParticles(dt) {
+    for (const p of this.particles) {
+      if (!p.active) continue;
+      p.age += dt;
+      if (p.age >= p.life) {
+        p.active = false;
+        p.g.visible = false;
+        continue;
+      }
+      p.vy += 90 * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      const a = 1 - p.age / p.life;
+      p.g.clear();
+      p.g.visible = true;
+      p.g.beginFill(0xffd76e, a);
+      p.g.drawRect(p.x, p.y, 3, 3);
+      p.g.endFill();
+    }
+  }
+
+  burstAt(el) {
+    if (!this.init() || !el) return;
+    const r = el.getBoundingClientRect();
+    for (let i = 0; i < 18; i++) {
+      const p = this.particles[this.particleCursor++ % this.particles.length];
+      const a = Math.random() * Math.PI * 2;
+      const s = 45 + Math.random() * 95;
+      Object.assign(p, { active: true, age: 0, life: .45 + Math.random() * .35, x: r.left + r.width / 2, y: r.top + r.height / 2, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 40 });
+    }
+    this.wake(900);
+  }
+
+  hasLiveParticles() {
+    return this.particles.some(p => p.active);
+  }
+
+  cssRotation(el) {
+    const raw = getComputedStyle(el).getPropertyValue('--fan-rot').trim();
+    return (parseFloat(raw) || 0) * Math.PI / 180;
+  }
+
+  restingRotation(key) {
+    return (this.hash(key) * 4 - 2) * Math.PI / 180;
+  }
+
+  hash(key) {
+    let h = 2166136261;
+    for (let i = 0; i < String(key).length; i++) h = Math.imul(h ^ String(key).charCodeAt(i), 16777619);
+    return ((h >>> 0) % 10000) / 10000;
+  }
+
+  faceColor(el) {
+    if (el.classList.contains('enhancement-stone')) return 0xaeb7bd;
+    if (el.classList.contains('enhancement-gold')) return 0xf2c65d;
+    if (el.classList.contains('enhancement-steel')) return 0xc8d4dd;
+    if (el.classList.contains('enhancement-glass')) return 0xdfe8ed;
+    return 0xf4ead8;
+  }
+
+  deckColor(el) {
+    if (el.classList.contains('deck-emerald')) return 0x12583c;
+    if (el.classList.contains('deck-sapphire')) return 0x164c86;
+    if (el.classList.contains('deck-ruby')) return 0x862537;
+    if (el.classList.contains('deck-aurora')) return 0x1e5666;
+    if (el.classList.contains('deck-neon')) return 0x18233d;
+    if (el.classList.contains('deck-cosmic')) return 0x211b58;
+    if (el.classList.contains('deck-gambit')) return 0x4d164f;
+    return 0x55307f;
+  }
+
+  deckAccent(el) {
+    if (el.classList.contains('deck-neon')) return 0x8fe7ff;
+    if (el.classList.contains('deck-ruby')) return 0xffb38a;
+    if (el.classList.contains('deck-emerald')) return 0xc9f4d8;
+    if (el.classList.contains('deck-cosmic')) return 0xdfc8ff;
+    return 0xf4ead8;
+  }
+}
+
+function syncPixiArt(st) {
+  if (!pixiArt) pixiArt = new PixiCribArt();
+  pixiArt.sync(st);
+}
 
 function isDragging() {
   return !!((pointerCardDrag && pointerCardDrag.dragging) || (jokerDrag && jokerDrag.dragging));
@@ -1847,6 +2203,7 @@ function renderGame(st) {
   renderOverlay(st);
   renderTutorial(st);
   sanitizeIcons($('game'));
+  syncPixiArt(st);
 }
 
 function phaseLabel(st) {
@@ -2438,7 +2795,7 @@ function renderHand(st) {
     const el = cardEl(c);
     const preview = myTurn ? peggingPreview(c, st) : null;
     el.dataset.cardId = c.id;
-    el.style.setProperty('--fan-rot', `${(idx - mid) * 5}deg`);
+    el.style.setProperty('--fan-rot', `${(idx - mid) * 0.8}deg`);
     el.style.setProperty('--fan-y', `${Math.abs(idx - mid) * 3}px`);
     el.style.zIndex = String(20 + idx);
     if (you.canDiscard) {

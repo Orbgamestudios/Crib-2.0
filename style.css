@@ -479,6 +479,45 @@ body.mode-board #phaseInfo::after {
 }
 
 #table { position: relative; flex: 1; min-height: 0; }
+#pixiArt {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1;
+  pointer-events: none;
+  image-rendering: pixelated;
+}
+#topbar,
+#table,
+#bottombar,
+#log,
+#overlay,
+#deckOverlay,
+#infoOverlay,
+#fx,
+#toast,
+#board2dWrap {
+  position: relative;
+  z-index: 3;
+}
+.pixi-art-enabled #game .card:not(.drag-ghost):not(.flying):not(.shuffling) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: transparent !important;
+}
+.pixi-art-enabled #game .card:not(.drag-ghost):not(.flying):not(.shuffling)::before,
+.pixi-art-enabled #game .card:not(.drag-ghost):not(.flying):not(.shuffling)::after {
+  opacity: 0 !important;
+}
+.pixi-art-enabled #game .card:not(.drag-ghost):not(.flying):not(.shuffling) > span:not(.discard-order-tag):not(.scoretag):not(.card-effect-tags) {
+  opacity: 0 !important;
+}
+.pixi-art-enabled #game .card.selected,
+.pixi-art-enabled #game .card.raised {
+  outline-color: var(--gold);
+}
 
 #seats { position: absolute; inset: 0; pointer-events: none; }
 
